@@ -41,13 +41,17 @@ const PROVIDER_COLORS = {
   Gemini: "#4f8cff", Claude: "#d97757", GPT: "#10a37f", Llama: "#7c5cff", Qwen: "#e3a008",
 };
 
-// GPU specs: vramGB, HBM bandwidth (GB/s), BF16 dense TFLOPS, representative $/hr midpoint, price range, role
+// GPU specs: vramGB, HBM bandwidth (GB/s), BF16 dense TFLOPS, $/hr midpoint, price range,
+// tf = rough relative inference throughput vs H100 (workload-dependent heuristic), role
 const GPUS = [
-  { gpu: "A100", vram: "80 GB",  vramGB: 80,  bwGBs: 2039, tflops: 312,  hr: 1.8, price: "$1.3–2.5", note: "Budget batch processing" },
-  { gpu: "H100", vram: "80 GB",  vramGB: 80,  bwGBs: 3352, tflops: 990,  hr: 3.0, price: "$2–4",     note: "70B training value king (pre-Blackwell)" },
-  { gpu: "H200", vram: "141 GB", vramGB: 141, bwGBs: 4800, tflops: 990,  hr: 3.8, price: "$3–4.5",   note: "Long-context / high-concurrency inference" },
-  { gpu: "B200", vram: "192 GB", vramGB: 192, bwGBs: 8000, tflops: 2250, hr: 6.0, price: "$2–3.5 spot · $5–14 on-demand", note: "~4× H100 throughput; cost/token down to ~1/7 of H100" },
+  { gpu: "A100", vram: "80 GB",  vramGB: 80,  bwGBs: 2039, tflops: 312,  hr: 1.8, tf: 0.5, price: "$1.3–2.5", note: "Budget batch processing" },
+  { gpu: "H100", vram: "80 GB",  vramGB: 80,  bwGBs: 3352, tflops: 990,  hr: 3.0, tf: 1.0, price: "$2–4",     note: "70B training value king (pre-Blackwell)" },
+  { gpu: "H200", vram: "141 GB", vramGB: 141, bwGBs: 4800, tflops: 990,  hr: 3.8, tf: 1.5, price: "$3–4.5",   note: "Long-context / high-concurrency inference (more VRAM → bigger batch)" },
+  { gpu: "B200", vram: "192 GB", vramGB: 192, bwGBs: 8000, tflops: 2250, hr: 6.0, tf: 4.0, price: "$2–3.5 spot · $5–14 on-demand", note: "~4× H100 throughput; cost/token down to ~1/7 of H100 when saturated" },
 ];
+// reference static-batch throughput for an H100 (tf=1.0); scaled by GPU tf
+const REF_TPUT_STATIC = 1000;   // build-vs-buy baseline (pre-batching)
+const REF_TPUT_SUSTAINED = 2500; // break-even sustained (with continuous batching)
 
 // Google specialized models (NOT per-token text) — interview reference
 const GOOGLE_MODELS = [
@@ -526,7 +530,7 @@ function renderGoogle() {
 
 function renderGpu() {
   $("gpuTable").querySelector("tbody").innerHTML = GPUS.map((g) =>
-    `<tr><td><b>${g.gpu}</b></td><td class="num">${g.vram}</td><td class="num">${(g.bwGBs / 1000).toFixed(2)} TB/s</td><td class="num">${fmtInt(g.tflops)}</td><td class="num">${g.price}</td><td>${g.note}</td></tr>`
+    `<tr><td><b>${g.gpu}</b></td><td class="num">${g.vram}</td><td class="num">${(g.bwGBs / 1000).toFixed(2)} TB/s</td><td class="num">${fmtInt(g.tflops)}</td><td class="num">~${g.tf}×</td><td class="num">${g.price}</td><td>${g.note}</td></tr>`
   ).join("");
 }
 
@@ -611,9 +615,9 @@ function init() {
   $("latPreset").addEventListener("change", () => { applyArchPreset("latPreset", "latParams", null); renderLatency(); });
   $("trPreset").addEventListener("change", () => { applyArchPreset("trPreset", "trParams", null); renderTraining(); });
   $("latGpu").addEventListener("change", renderLatency);
-  $("beGpu").addEventListener("change", () => { $("beHr").value = GPU_HR($("beGpu").value); renderBreakeven(); });
+  $("beGpu").addEventListener("change", () => { const g = gpuByName($("beGpu").value); $("beHr").value = g.hr; $("beTokGpu").value = Math.round(REF_TPUT_SUSTAINED * g.tf); renderBreakeven(); });
   $("trGpu").addEventListener("change", () => { $("trHr").value = GPU_HR($("trGpu").value); renderTraining(); });
-  $("lvGpu").addEventListener("change", () => { $("lvHr").value = GPU_HR($("lvGpu").value); renderLeverResult(); });
+  $("lvGpu").addEventListener("change", () => { const g = gpuByName($("lvGpu").value); $("lvHr").value = g.hr; $("lvTok").value = Math.round(REF_TPUT_STATIC * g.tf); renderLeverResult(); });
 
   // theme toggle
   const tt = $("themeToggle");

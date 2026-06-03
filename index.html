@@ -236,7 +236,7 @@
         </label>
         <label>Sustained throughput tok/s · per GPU
           <input id="beTokGpu" type="number" min="1" value="2500" />
-          <span class="sub">with continuous batching (see Capacity tab)</span>
+          <span class="sub">with continuous batching · auto-scales with GPU; edit to measured</span>
         </label>
       </div>
       <div id="beResult" class="result-cards"></div>
@@ -264,7 +264,7 @@
         </label>
         <label>Baseline throughput tok/s
           <input id="lvTok" type="number" min="1" value="1000" />
-          <span class="sub">static-batch baseline; use measured</span>
+          <span class="sub">static-batch · auto-scales with GPU; edit to measured</span>
         </label>
       </div>
       <div class="inputs grid-3">
@@ -413,7 +413,7 @@
       <div class="table-wrap">
         <table class="data-table" id="gpuTable">
           <thead>
-            <tr><th>GPU</th><th class="num">VRAM</th><th class="num">HBM BW</th><th class="num">BF16 TFLOPS</th><th class="num">Cloud $/hr</th><th>Role / note</th></tr>
+            <tr><th>GPU</th><th class="num">VRAM</th><th class="num">HBM BW</th><th class="num">BF16 TFLOPS</th><th class="num">≈Tput vs H100</th><th class="num">Cloud $/hr</th><th>Role / note</th></tr>
           </thead>
           <tbody></tbody>
         </table>
