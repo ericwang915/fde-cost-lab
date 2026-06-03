@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FDE Cost Lab · LLM napkin-math toolkit</title>
+  <meta name="description" content="Forward Deployed Engineer napkin-math toolkit: token cost, latency, capacity sizing, build-vs-buy break-even, KV-cache, training cost, RAG sizing, and a full formula library." />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">⚡</span>
+      <div>
+        <div class="brand-title">FDE Cost Lab</div>
+        <div class="brand-sub">LLM napkin-math · cost / latency / capacity / GPU</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="#calc">💰 Cost</a>
+      <a href="#routing">🔀 Routing</a>
+      <a href="#google">🔷 Google</a>
+      <a href="#latency">⏱️ Latency</a>
+      <a href="#capacity">📈 Capacity</a>
+      <a href="#breakeven">⚖️ Break-even</a>
+      <a href="#levers">🔧 Build-vs-Buy</a>
+      <a href="#kv">🧮 KV-Cache</a>
+      <a href="#training">🎓 Training</a>
+      <a href="#rag">🔎 RAG</a>
+      <a href="#gpu">🖥️ GPUs</a>
+      <a href="#cheat">📐 Formulas</a>
+    </nav>
+    <button id="themeToggle" class="theme-toggle" title="Toggle theme">🌙</button>
+  </header>
+
+  <main>
+    <!-- ======================= TOKEN COST ======================= -->
+    <section id="calc" class="panel">
+      <div class="panel-head">
+        <h2>💰 Token Cost Calculator</h2>
+        <p class="hint">Enter input / output tokens per request and daily request volume (DAU / requests). Get live per-request / day / month cost across every major model. Prices are <b>$ per 1M tokens</b>; edit any cell to match the customer's contract.</p>
+      </div>
+
+      <div class="inputs grid-4">
+        <label>Input tokens / req
+          <input id="inTok" type="number" min="0" value="2000" />
+        </label>
+        <label>Output tokens / req
+          <input id="outTok" type="number" min="0" value="500" />
+        </label>
+        <label>Requests / day (DAU)
+          <input id="reqs" type="number" min="0" value="100000" />
+        </label>
+        <label>Days / month
+          <input id="days" type="number" min="1" value="30" />
+        </label>
+      </div>
+
+      <div class="inputs grid-3 advanced">
+        <label>Cache hit rate (input cached %)
+          <input id="cacheHit" type="number" min="0" max="100" value="0" />
+          <span class="sub">Cached input billed at ¼ of input price</span>
+        </label>
+        <label>Baseline model (for savings %)
+          <select id="baseline"></select>
+        </label>
+        <label class="checkbox-label">
+          <input id="onlyShown" type="checkbox" />
+          <span>Only show selected providers</span>
+        </label>
+      </div>
+
+      <div id="providerFilter" class="chips"></div>
+
+      <div class="table-wrap">
+        <table id="costTable" class="data-table">
+          <thead>
+            <tr>
+              <th data-sort="model">Model ▾</th>
+              <th data-sort="provider">Provider</th>
+              <th data-sort="inPrice" class="num">Input<br><span class="sub">$/1M</span></th>
+              <th data-sort="outPrice" class="num">Output<br><span class="sub">$/1M</span></th>
+              <th data-sort="perReq" class="num">$/req</th>
+              <th data-sort="perDay" class="num">$/day</th>
+              <th data-sort="perMonth" class="num">$/month ▾</th>
+              <th data-sort="vsBase" class="num">vs base</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="hint small">💡 Click an Input/Output price cell to edit it (override with the customer's real rate). Click a header to sort. <b>Prices verified 2026-06-03</b>: Gemini = Vertex, Claude = anthropic.com, GPT = OpenAI official; Llama / Qwen = representative hosted averages (vary by provider / context). Tune to the contract.</p>
+    </section>
+
+    <!-- ======================= ROUTING MIX ======================= -->
+    <section id="routing" class="panel">
+      <div class="panel-head">
+        <h2>🔀 Routing / Model-Mix Cost</h2>
+        <p class="hint">Rarely does one model handle everything. Send simple requests to a cheap model, escalate only hard reasoning to a big one. This shows the <b>blended cost</b> and how much you save vs running the big model for everything.<br><span class="sub">Precondition: you have an eval set that proves "how much accuracy you lost."</span></p>
+      </div>
+      <div class="inputs grid-3">
+        <label>Simple-request model (cheap)
+          <select id="rtSimple"></select>
+        </label>
+        <label>Complex-request model (expensive)
+          <select id="rtComplex"></select>
+        </label>
+        <label>% routed to cheap model <span id="rtPctLabel" class="pct-badge">70%</span>
+          <input id="rtPct" type="range" min="0" max="100" value="70" />
+        </label>
+      </div>
+      <div id="routingResult" class="result-cards"></div>
+    </section>
+
+    <!-- ======================= GOOGLE FAMILY ======================= -->
+    <section id="google" class="panel">
+      <div class="panel-head">
+        <h2>🔷 Google / Gemini Model Family</h2>
+        <p class="hint">The full lineup an FDE should be able to rattle off. The <a href="#calc">Cost table</a> above now carries <b>7 Gemini text tiers</b> across the 2.5 / 3.x generations (Pro · Flash · Flash-Lite). Below: the specialized models and the pricing levers you'd pitch to a customer.</p>
+      </div>
+
+      <h3 class="subhead">Specialized models (not per-token text)</h3>
+      <div class="table-wrap">
+        <table class="data-table" id="gSpecial">
+          <thead><tr><th>Model</th><th>Category</th><th>Native price</th><th>Notes</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <h3 class="subhead">Pricing levers (Vertex AI / Gemini API)</h3>
+      <div class="table-wrap">
+        <table class="data-table" id="gLevers">
+          <thead><tr><th>Lever</th><th>Effect</th><th>Notes</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <p class="hint small">⚠️ Live as of 2026-06-03. <b>Gemini 2.0 &amp; 1.5 families are retired</b> (2.0 shut down Jun 1 2026) — excluded from the live calculator. <b>Gemini 3.5 Pro</b> is announced but not yet priced/shipped. Reasoning ("thinking") tokens are billed as normal <b>output</b> tokens — no separate SKU.</p>
+    </section>
+
+    <!-- ======================= LATENCY ======================= -->
+    <section id="latency" class="panel">
+      <div class="panel-head">
+        <h2>⏱️ Latency Estimator (TTFT / TPOT / E2E)</h2>
+        <p class="hint">Customers always ask "how fast?" Prefill (TTFT) is <b>compute-bound</b>; decode (per-token) is <b>memory-bandwidth-bound</b> — single-stream decode speed ≈ <code>HBM bandwidth ÷ model bytes</code>. Batching raises aggregate throughput, not single-request latency.</p>
+      </div>
+      <div class="inputs grid-4">
+        <label>Model preset
+          <select id="latPreset"></select>
+        </label>
+        <label>Params (B)
+          <input id="latParams" type="number" min="0.1" step="0.1" value="70" />
+        </label>
+        <label>Precision (bytes/param)
+          <select id="latPrec">
+            <option value="2">FP16 / BF16 (2)</option>
+            <option value="1">FP8 (1)</option>
+            <option value="0.5">INT4 (0.5)</option>
+          </select>
+        </label>
+        <label>GPU
+          <select id="latGpu"></select>
+        </label>
+      </div>
+      <div class="inputs grid-4">
+        <label>Prompt tokens (input)
+          <input id="latPrompt" type="number" min="0" value="2000" />
+        </label>
+        <label>Output tokens
+          <input id="latOut" type="number" min="1" value="500" />
+        </label>
+        <label>MFU % (prefill efficiency)
+          <input id="latMfu" type="number" min="1" max="100" value="40" />
+          <span class="sub">realistic 30–50%</span>
+        </label>
+      </div>
+      <div id="latResult" class="result-cards"></div>
+      <div class="formula-box">decode tok/s ≈ HBM_BW ÷ model_bytes &nbsp;·&nbsp; TPOT = 1 ÷ decode_tok/s &nbsp;·&nbsp; TTFT ≈ 2·N·prompt ÷ (FLOPS·MFU) &nbsp;·&nbsp; E2E = TTFT + out × TPOT</div>
+    </section>
+
+    <!-- ======================= CAPACITY ======================= -->
+    <section id="capacity" class="panel">
+      <div class="panel-head">
+        <h2>📈 Capacity & GPU Sizing (Little's Law)</h2>
+        <p class="hint">From target traffic to "how many GPUs." In-flight concurrency follows <b>Little's Law</b> = QPS × latency; GPU count follows the per-GPU token throughput and a utilization headroom.</p>
+      </div>
+      <div class="inputs grid-4">
+        <label>Peak QPS (req/s)
+          <input id="capQps" type="number" min="0" step="0.1" value="20" />
+        </label>
+        <label>Avg output tokens / req
+          <input id="capOut" type="number" min="1" value="500" />
+        </label>
+        <label>Aggregate decode tok/s per GPU
+          <input id="capTokGpu" type="number" min="1" value="2500" />
+          <span class="sub">with continuous batching</span>
+        </label>
+        <label>Avg E2E latency (s)
+          <input id="capLat" type="number" min="0.1" step="0.1" value="6" />
+        </label>
+      </div>
+      <div class="inputs grid-3">
+        <label>Target GPU utilization %
+          <input id="capUtil" type="number" min="1" max="100" value="70" />
+          <span class="sub">leave headroom for bursts</span>
+        </label>
+      </div>
+      <div id="capResult" class="result-cards"></div>
+      <div class="formula-box">concurrency = QPS × latency &nbsp;·&nbsp; QPS/GPU = agg_tok/s ÷ out_tokens &nbsp;·&nbsp; GPUs = ⌈ QPS ÷ (QPS/GPU) ÷ util ⌉</div>
+    </section>
+
+    <!-- ======================= BREAK-EVEN ======================= -->
+    <section id="breakeven" class="panel">
+      <div class="panel-head">
+        <h2>⚖️ Break-even: Self-host vs Managed API</h2>
+        <p class="hint">Owning GPUs is a <b>fixed</b> monthly cost; the API is <b>per-token</b>. There's a crossover volume above which self-hosting wins — and below which you're paying for idle silicon.</p>
+      </div>
+      <div class="inputs grid-4">
+        <label>GPU
+          <select id="beGpu"></select>
+        </label>
+        <label>$/hr · per GPU
+          <input id="beHr" type="number" min="0" step="0.1" value="3.0" />
+        </label>
+        <label># GPUs (24×7)
+          <input id="beN" type="number" min="1" value="1" />
+        </label>
+        <label>Compare-to API model
+          <select id="beModel"></select>
+        </label>
+      </div>
+      <div class="inputs grid-3">
+        <label>Your monthly tokens (M)
+          <input id="beTokens" type="number" min="0" value="7500" />
+          <span class="sub">defaults to your Cost-tab volume</span>
+        </label>
+      </div>
+      <div id="beResult" class="result-cards"></div>
+      <div class="formula-box">self-host $/mo = #GPU × $/hr × 24 × 30 &nbsp;·&nbsp; break-even tokens/mo = self-host $/mo ÷ (API $/token)</div>
+    </section>
+
+    <!-- ======================= THROUGHPUT LEVERS / BUILD-VS-BUY ======================= -->
+    <section id="levers" class="panel">
+      <div class="panel-head">
+        <h2>🔧 Throughput Levers & Self-host Cost</h2>
+        <p class="hint">Toggle the optimization levers and watch <b>self-hosted $/1M tokens</b> drop, with a live <b>build-vs-buy</b> comparison against the managed API.<br>
+        <span class="sub">⚠️ These levers cut <u>self-hosted</u> cost. The managed API's per-token price is fixed by the provider (they already do this internally) — so this section models "if you ran the GPUs yourself."</span></p>
+      </div>
+
+      <div class="inputs grid-4">
+        <label>GPU
+          <select id="lvGpu"></select>
+        </label>
+        <label>$/hr · per GPU (editable)
+          <input id="lvHr" type="number" min="0" step="0.1" value="3.0" />
+        </label>
+        <label># GPUs
+          <input id="lvN" type="number" min="1" value="1" />
+        </label>
+        <label>Baseline throughput tok/s
+          <input id="lvTok" type="number" min="1" value="1000" />
+          <span class="sub">static-batch baseline; use measured</span>
+        </label>
+      </div>
+      <div class="inputs grid-3">
+        <label>Build-vs-Buy compare model (API)
+          <select id="lvModel"></select>
+        </label>
+      </div>
+
+      <p class="hint small" style="margin:4px 0 12px">Check the levers below (ordered by bang-for-buck — start with the free lunch):</p>
+      <div id="leverToggles" class="lever-grid"></div>
+
+      <div id="leverResult" class="result-cards" style="margin-top:18px"></div>
+      <p id="leverNote" class="hint small"></p>
+      <div class="formula-box">self-host $/1M = (GPU $/hr × #GPU ÷ 3600) ÷ effective_tok/s × 1e6 &nbsp;·&nbsp; throughput levers ↑ → cost ↓; reserved → hourly ↓; quant → less VRAM (fewer GPUs)</div>
+    </section>
+
+    <!-- ======================= KV CACHE ======================= -->
+    <section id="kv" class="panel">
+      <div class="panel-head">
+        <h2>🧮 KV-Cache VRAM Calculator</h2>
+        <p class="hint">What dictates which GPU you buy is often the KV-cache, not the parameter count. It grows <b>linearly</b> with both <b>concurrency</b> and <b>context length</b>.</p>
+      </div>
+
+      <div class="inputs grid-4">
+        <label>Architecture preset
+          <select id="kvPreset"></select>
+        </label>
+        <label>Layers
+          <input id="kvLayers" type="number" min="1" value="80" />
+        </label>
+        <label>KV heads
+          <input id="kvHeads" type="number" min="1" value="8" />
+        </label>
+        <label>Head dim
+          <input id="kvHeadDim" type="number" min="1" value="128" />
+        </label>
+      </div>
+      <div class="inputs grid-4">
+        <label>Context length (seq_len)
+          <input id="kvSeq" type="number" min="1" value="4096" />
+        </label>
+        <label>Precision (bytes/element)
+          <select id="kvBytes">
+            <option value="2">FP16 / BF16 (2 bytes)</option>
+            <option value="1">FP8 (1 byte)</option>
+            <option value="0.5">INT4 (0.5 byte)</option>
+          </select>
+        </label>
+        <label>Concurrent requests
+          <input id="kvConc" type="number" min="1" value="200" />
+        </label>
+        <label>Model weights (GB, optional)
+          <input id="kvWeights" type="number" min="0" value="140" />
+          <span class="sub">to compare KV vs weights</span>
+        </label>
+      </div>
+
+      <div id="kvResult" class="result-cards"></div>
+      <div class="formula-box">KV / req = 2 × layers × kv_heads × head_dim × seq_len × bytes &nbsp;→&nbsp; total VRAM = weights + KV/req × concurrency</div>
+    </section>
+
+    <!-- ======================= TRAINING ======================= -->
+    <section id="training" class="panel">
+      <div class="panel-head">
+        <h2>🎓 Training / Fine-tune Cost</h2>
+        <p class="hint">The canonical <b>6 × N × D</b> rule: training a dense model takes ~6 FLOPs per parameter per token (forward + backward). Memory for full fine-tuning is dominated by optimizer state, not weights.</p>
+      </div>
+      <div class="inputs grid-4">
+        <label>Model preset
+          <select id="trPreset"></select>
+        </label>
+        <label>Params N (B)
+          <input id="trParams" type="number" min="0.01" step="0.1" value="8" />
+        </label>
+        <label>Training tokens D (B)
+          <input id="trTokens" type="number" min="0.001" step="1" value="100" />
+        </label>
+        <label>GPU
+          <select id="trGpu"></select>
+        </label>
+      </div>
+      <div class="inputs grid-4">
+        <label># GPUs
+          <input id="trN" type="number" min="1" value="8" />
+        </label>
+        <label>MFU %
+          <input id="trMfu" type="number" min="1" max="100" value="40" />
+        </label>
+        <label>$/hr · per GPU
+          <input id="trHr" type="number" min="0" step="0.1" value="3.0" />
+        </label>
+      </div>
+      <div id="trResult" class="result-cards"></div>
+      <div class="formula-box">FLOPs = 6 × N × D &nbsp;·&nbsp; time = FLOPs ÷ (#GPU × TFLOPS × MFU) &nbsp;·&nbsp; full-FT memory ≈ ~16–20 bytes/param (weights+grads+Adam) &nbsp;·&nbsp; LoRA ≈ weights only</div>
+    </section>
+
+    <!-- ======================= RAG ======================= -->
+    <section id="rag" class="panel">
+      <div class="panel-head">
+        <h2>🔎 RAG / Vector-DB Sizing</h2>
+        <p class="hint">Two costs people forget: the <b>vector store</b> (RAM/disk) and the <b>per-query context overhead</b> — every retrieved chunk is billed as input tokens on <i>every</i> call.</p>
+      </div>
+      <div class="inputs grid-4">
+        <label>Vectors (chunks) count
+          <input id="ragN" type="number" min="0" value="1000000" />
+        </label>
+        <label>Embedding dim
+          <input id="ragDim" type="number" min="1" value="1536" />
+        </label>
+        <label>Vector precision
+          <select id="ragPrec">
+            <option value="4">FP32 (4 bytes)</option>
+            <option value="2">FP16 (2 bytes)</option>
+            <option value="1">INT8 (1 byte)</option>
+          </select>
+        </label>
+        <label>Index overhead ×
+          <input id="ragOverhead" type="number" min="1" step="0.1" value="1.5" />
+          <span class="sub">HNSW ≈ 1.5–2×</span>
+        </label>
+      </div>
+      <div class="inputs grid-4">
+        <label>Tokens per chunk
+          <input id="ragChunkTok" type="number" min="1" value="400" />
+        </label>
+        <label>Embedding price $/1M
+          <input id="ragEmbedPrice" type="number" min="0" step="0.01" value="0.13" />
+        </label>
+        <label>Retrieved chunks / query (top-k)
+          <input id="ragTopk" type="number" min="1" value="5" />
+        </label>
+        <label>Queries / month
+          <input id="ragQueries" type="number" min="0" value="1000000" />
+        </label>
+      </div>
+      <div id="ragResult" class="result-cards"></div>
+      <div class="formula-box">store = vectors × dim × bytes × overhead &nbsp;·&nbsp; embed cost = vectors × chunk_tokens × price ÷ 1e6 &nbsp;·&nbsp; added input/query = top-k × chunk_tokens</div>
+    </section>
+
+    <!-- ======================= GPU TABLE ======================= -->
+    <section id="gpu" class="panel">
+      <div class="panel-head">
+        <h2>🖥️ GPU Reference (price · VRAM · bandwidth · TFLOPS)</h2>
+        <p class="hint">Rough 2026 cloud ranges. <b>Cost-per-run beats cost-per-hour</b> — a higher-throughput card can be cheaper per token even at a higher hourly rate, <u>if you keep it saturated</u>. For bursty traffic the per-token API wins (you don't pay for idle GPUs).</p>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table" id="gpuTable">
+          <thead>
+            <tr><th>GPU</th><th class="num">VRAM</th><th class="num">HBM BW</th><th class="num">BF16 TFLOPS</th><th class="num">Cloud $/hr</th><th>Role / note</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <span class="callout-tag">Key line</span>
+        "A B200 at 4× the throughput is cheaper per token even at 2× the hourly rate — but only if I can keep it saturated. For bursty traffic, the per-token managed API still wins because I'm not paying for idle GPUs."
+      </div>
+    </section>
+
+    <!-- ======================= FORMULA LIBRARY ======================= -->
+    <section id="cheat" class="panel">
+      <div class="panel-head">
+        <h2>📐 Formula Library</h2>
+        <p class="hint">Every napkin-math formula an FDE reaches for, in one place.</p>
+      </div>
+      <div class="cheat-grid" id="cheatGrid"></div>
+      <div class="callout" style="margin-top:18px">
+        <span class="callout-tag">Two lines to memorize</span>
+        "Cost-per-run beats cost-per-hour." &nbsp;·&nbsp; "KV-cache grows linearly with both concurrency and context length — at 32K context it often exceeds the model weights, and that's what dictates the GPU, not the parameter count."
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>FDE Cost Lab · pure static single page, no backend, no tracking. Just open <code>index.html</code>.</p>
+      <p class="sub">Prices verified against vendor / hosting sources on 2026-06-03; for fast field estimates only — confirm formal quotes against each vendor's console/contract.</p>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
