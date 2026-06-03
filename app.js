@@ -333,22 +333,45 @@ function blendedPer1M(model) {
   return (inTok * model.inPrice + outTok * model.outPrice) / ((inTok + outTok) || 1);
 }
 function renderBreakeven() {
-  const hr = num("beHr"), n = num("beN");
+  const hr = num("beHr"), n = num("beN"), tokGpu = num("beTokGpu") || 1;
   const m = MODELS.find((x) => x.model === $("beModel").value) || MODELS[0];
   const per1M = blendedPer1M(m), perToken = per1M / 1e6;
+  const SEC_MO = 30 * 86400; // 2,592,000 s/month
 
-  const selfMonthly = n * hr * 24 * 30;
-  const beTokens = perToken > 0 ? selfMonthly / perToken : Infinity;   // tokens/month
+  const selfMonthly = n * hr * 24 * 30;                 // fixed
+  const ceiling = n * tokGpu * SEC_MO;                  // max tokens/mo this rig can serve
+  const satPer1M = ceiling > 0 ? (selfMonthly * 1e6) / ceiling : Infinity; // best-case self-host rate
+  const beThroughput = per1M > 0 ? (hr * 1e6) / (3600 * per1M) : Infinity; // tok/s/GPU to match API
+  const beTokens = perToken > 0 ? selfMonthly / perToken : Infinity;       // pure cost crossover
+  const reachable = beTokens <= ceiling;               // === satPer1M <= per1M === tokGpu >= beThroughput
   const yourTokens = num("beTokens") * 1e6;
   const apiMonthly = yourTokens * perToken;
-  const selfCheaper = apiMonthly > selfMonthly;
-  const gap = selfMonthly > 0 ? Math.abs(apiMonthly - selfMonthly) / Math.max(apiMonthly, selfMonthly) : 0;
+
+  // verdict accounts for throughput feasibility
+  let vClass, vTitle, vSub;
+  if (!reachable) {
+    vClass = "warn"; vTitle = "API wins at any volume";
+    vSub = `need ≥ ${fmtInt(beThroughput)} tok/s/GPU (you set ${fmtInt(tokGpu)})`;
+  } else if (yourTokens >= beTokens) {
+    vClass = "good"; vTitle = "Self-host cheaper now";
+    vSub = `saturated ${fmtMoney(satPer1M)}/1M < API ${fmtMoney(per1M)}/1M`;
+  } else {
+    vClass = "warn"; vTitle = "API cheaper now";
+    vSub = `self-host wins above ${fmtNumC(beTokens)} tok/mo`;
+  }
 
   $("beResult").innerHTML = `
-    <div class="rcard"><div class="rlabel">Self-host (fixed)</div><div class="rval">${fmtCompact(selfMonthly)}</div><div class="rsub">${n}× ${$("beGpu").value} × 24×7</div></div>
-    <div class="rcard"><div class="rlabel">Managed API @ your volume</div><div class="rval">${fmtCompact(apiMonthly)}</div><div class="rsub">${num("beTokens").toLocaleString()}M tok × ${fmtMoney(per1M)}/1M</div></div>
-    <div class="rcard accent"><div class="rlabel">Break-even volume</div><div class="rval">${fmtNumC(beTokens)}<span style="font-size:13px"> tok/mo</span></div><div class="rsub">above this, self-host wins</div></div>
-    <div class="rcard ${selfCheaper ? "good" : "warn"}"><div class="rlabel">At your volume</div><div class="rval" style="font-size:19px;line-height:1.25">${selfCheaper ? "Self-host" : "Managed API"} cheaper ${(gap * 100).toFixed(0)}%</div><div class="rsub">${selfCheaper ? "if you keep GPUs busy" : "no idle-GPU bill"}</div></div>`;
+    <div class="rcard"><div class="rlabel">Self-host (fixed)</div><div class="rval">${fmtCompact(selfMonthly)}</div><div class="rsub">${n}× ${$("beGpu").value} · caps at ${fmtNumC(ceiling)} tok/mo</div></div>
+    <div class="rcard"><div class="rlabel">API @ your volume</div><div class="rval">${fmtCompact(apiMonthly)}</div><div class="rsub">${num("beTokens").toLocaleString()}M × ${fmtMoney(per1M)}/1M</div></div>
+    <div class="rcard ${satPer1M <= per1M ? "good" : "warn"}"><div class="rlabel">Self-host $/1M (saturated)</div><div class="rval">${fmtMoney(satPer1M)}</div><div class="rsub">best case vs API ${fmtMoney(per1M)}/1M</div></div>
+    <div class="rcard accent"><div class="rlabel">Break-even throughput</div><div class="rval">${fmtInt(beThroughput)}<span style="font-size:13px"> tok/s/GPU</span></div><div class="rsub">to beat API · you set ${fmtInt(tokGpu)}</div></div>
+    <div class="rcard ${vClass}"><div class="rlabel">Verdict</div><div class="rval" style="font-size:18px;line-height:1.25">${vTitle}</div><div class="rsub">${vSub}</div></div>`;
+
+  let note = reachable
+    ? `Break-even volume ${fmtNumC(beTokens)} tok/mo is within this rig's ${fmtNumC(ceiling)} tok/mo ceiling — above it, self-host wins.`
+    : `⚠ Break-even volume ${fmtNumC(beTokens)} tok/mo exceeds the ${fmtNumC(ceiling)} tok/mo throughput ceiling — unreachable, so self-host can't beat the API at ${fmtInt(tokGpu)} tok/s no matter the volume. Raise throughput (quantize / spec-decode / bigger batch) or use a cheaper card.`;
+  if (yourTokens > ceiling) note += ` ⚠ Your volume ${fmtNumC(yourTokens)} tok/mo exceeds capacity — you'd need ${Math.ceil(yourTokens / ceiling)}× the GPUs to serve it.`;
+  $("beNote").innerHTML = note;
 }
 
 /* ============================================================
@@ -577,7 +600,7 @@ function init() {
   ["rtSimple", "rtComplex", "rtPct"].forEach((id) => $(id).addEventListener("input", renderRouting));
   ["latParams", "latPrec", "latGpu", "latPrompt", "latOut", "latMfu"].forEach((id) => $(id).addEventListener("input", renderLatency));
   ["capQps", "capOut", "capTokGpu", "capLat", "capUtil"].forEach((id) => $(id).addEventListener("input", renderCapacity));
-  ["beHr", "beN", "beModel", "beTokens"].forEach((id) => $(id).addEventListener("input", renderBreakeven));
+  ["beHr", "beN", "beModel", "beTokens", "beTokGpu"].forEach((id) => $(id).addEventListener("input", renderBreakeven));
   ["lvHr", "lvN", "lvTok", "lvModel"].forEach((id) => $(id).addEventListener("input", renderLeverResult));
   ["kvLayers", "kvHeads", "kvHeadDim", "kvSeq", "kvBytes", "kvConc", "kvWeights"].forEach((id) => $(id).addEventListener("input", renderKv));
   ["trParams", "trTokens", "trGpu", "trN", "trMfu", "trHr"].forEach((id) => $(id).addEventListener("input", renderTraining));

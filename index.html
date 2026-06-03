@@ -234,9 +234,14 @@
           <input id="beTokens" type="number" min="0" value="7500" />
           <span class="sub">defaults to your Cost-tab volume</span>
         </label>
+        <label>Sustained throughput tok/s · per GPU
+          <input id="beTokGpu" type="number" min="1" value="2500" />
+          <span class="sub">with continuous batching (see Capacity tab)</span>
+        </label>
       </div>
       <div id="beResult" class="result-cards"></div>
-      <div class="formula-box">self-host $/mo = #GPU × $/hr × 24 × 30 &nbsp;·&nbsp; break-even tokens/mo = self-host $/mo ÷ (API $/token)</div>
+      <p id="beNote" class="hint small"></p>
+      <div class="formula-box">self-host $/mo = #GPU × $/hr × 24 × 30 &nbsp;·&nbsp; ceiling = #GPU × tok/s × 2.59M/mo &nbsp;·&nbsp; break-even tok/s per GPU = $/hr × 1e6 ÷ (3600 × API $/1M)</div>
     </section>
 
     <!-- ======================= THROUGHPUT LEVERS / BUILD-VS-BUY ======================= -->
