@@ -77,11 +77,11 @@ const GOOGLE_LEVERS = [
 
 // Architecture presets: layers, KV heads, head_dim, FP16 weight GB, params (B)
 const ARCH = {
-  "Llama 8B":     { layers: 32,  heads: 8, headDim: 128, weights: 16,  params: 8 },
-  "Llama 70B":    { layers: 80,  heads: 8, headDim: 128, weights: 140, params: 70 },
-  "Llama 405B":   { layers: 126, heads: 8, headDim: 128, weights: 810, params: 405 },
-  "Qwen2.5 72B":  { layers: 80,  heads: 8, headDim: 128, weights: 145, params: 72 },
-  "Mistral 7B":   { layers: 32,  heads: 8, headDim: 128, weights: 14,  params: 7 },
+  "Llama 8B":     { layers: 32,  heads: 8, headDim: 128, weights: 16,  params: 8,   hidden: 4096 },
+  "Llama 70B":    { layers: 80,  heads: 8, headDim: 128, weights: 140, params: 70,  hidden: 8192 },
+  "Llama 405B":   { layers: 126, heads: 8, headDim: 128, weights: 810, params: 405, hidden: 16384 },
+  "Qwen2.5 72B":  { layers: 80,  heads: 8, headDim: 128, weights: 145, params: 72,  hidden: 8192 },
+  "Mistral 7B":   { layers: 32,  heads: 8, headDim: 128, weights: 14,  params: 7,   hidden: 4096 },
   "Custom":       null,
 };
 
@@ -250,6 +250,9 @@ function buildSelects() {
   $("kvGpu").innerHTML = gpuOpts; $("kvGpu").value = "H100";
   $("latPreset").innerHTML = archOpts; $("latPreset").value = "Llama 70B";
   $("trPreset").innerHTML = archOpts; $("trPreset").value = "Llama 8B";
+  $("qlPreset").innerHTML = Object.keys(ARCH).filter((k) => ARCH[k]).map((k) => `<option value="${k}">${k}</option>`).join("");
+  $("qlPreset").value = "Llama 70B";
+  $("qlGpu").innerHTML = gpuOpts; $("qlGpu").value = "H100";
 
   $("latGpu").innerHTML = gpuOpts; $("latGpu").value = "H100";
   $("beGpu").innerHTML = gpuOpts; $("beGpu").value = "H100"; $("beHr").value = GPU_HR("H100");
@@ -546,6 +549,57 @@ function renderTraining() {
 }
 
 /* ============================================================
+   QLORA FINE-TUNE & OOM
+   ============================================================ */
+// QLoRA = 4-bit frozen base (NF4) + small trainable LoRA adapters.
+// OOM driver is almost always activations (batch × seq), not weights.
+const QLORA_FIXES = [
+  { name: "Gradient checkpointing", impact: "activations ~5–10×↓", code: "gradient_checkpointing=True", desc: "Recompute activations in the backward pass instead of storing them. Biggest lever; ~20–30% slower." },
+  { name: "Batch=1 + grad accumulation", impact: "activations ∝ batch", code: "per_device_train_batch_size=1\ngradient_accumulation_steps=N", desc: "Keep the effective batch while cutting peak memory." },
+  { name: "Flash Attention 2", impact: "attn O(seq²)→O(seq)", code: 'attn_implementation="flash_attention_2"', desc: "Removes the seq² score matrix — mandatory for long context." },
+  { name: "Shorter seq / sample packing", impact: "activations ∝ seq", code: "max_seq_length=2048", desc: "The single biggest number at long context (attention ~seq²). Trim or pack samples." },
+  { name: "Paged 8-bit optimizer", impact: "no OOM spikes", code: 'optim="paged_adamw_8bit"', desc: "Offloads optimizer state to CPU on memory spikes; also halves optimizer size." },
+  { name: "Lower rank / fewer modules", impact: "adapter+grad+opt ↓", code: 'r=16  # or attn-only target_modules', desc: "Smaller adapters. Attn-only (q,v) vs all-linear." },
+  { name: "Double quantization", impact: "~0.4 bit/param ↓", code: "bnb_4bit_use_double_quant=True", desc: "~3GB off a 70B base, essentially free accuracy-wise." },
+  { name: "FSDP / DeepSpeed sharding", impact: "split across GPUs", code: "FSDP + QLoRA (fsdp_qlora)", desc: "Shard base + adapters across GPUs — e.g. 70B on 2×24GB." },
+  { name: "CPU / NVMe offload", impact: "last resort (slow)", code: "DeepSpeed ZeRO-3 offload", desc: "When nothing else fits; large speed penalty." },
+];
+function renderQloraFixes() {
+  $("qlFixes").innerHTML = QLORA_FIXES.map((f, i) =>
+    `<div class="lever"><span class="rank">${i + 1}</span><h4>${f.name}</h4><span class="gain">${f.impact}</span><p>${f.desc}</p><div class="fix-code">${f.code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/\n/g, "<br>")}</div></div>`
+  ).join("");
+}
+
+function renderQlora() {
+  const a = ARCH[$("qlPreset").value];
+  if (!a) return;
+  const params = a.params, hidden = a.hidden, layers = a.layers, nHeads = hidden / 128;
+  const seq = num("qlSeq") || 1, batch = num("qlBatch") || 1, r = num("qlRank") || 1;
+  const g = gpuByName($("qlGpu").value);
+  const ckpt = chk("qlCkpt"), flash = chk("qlFlash");
+
+  const baseGB = params * 0.5;                          // NF4 4-bit, frozen
+  const trainable = 2 * r * hidden * 7 * layers;        // LoRA A+B over ~7 all-linear matrices
+  const adapterGB = trainable * 6 / 1e9;                // bf16 weight(2)+grad(2)+8-bit opt(2)
+  const C = ckpt ? 3 : 24;                              // activation constant: checkpointed vs not
+  const actBaseGB = (layers * batch * seq * hidden * 2 * C) / 1e9;
+  const attnGB = flash ? 0 : (layers * batch * nHeads * seq * seq * 2) / 1e9; // seq² score matrix
+  const actGB = actBaseGB + attnGB;
+  const overhead = 2;                                   // CUDA context / fragmentation
+  const totalGB = baseGB + adapterGB + actGB + overhead;
+
+  const nSel = Math.max(1, Math.ceil(totalGB / g.vramGB));
+  const fits = totalGB <= g.vramGB;
+  const headroom = g.vramGB - totalGB;
+
+  $("qlResult").innerHTML = `
+    <div class="rcard"><div class="rlabel">4-bit base (frozen)</div><div class="rval">${fmtGB(baseGB)}</div><div class="rsub">${params}B × 0.5 (NF4)</div></div>
+    <div class="rcard"><div class="rlabel">Adapter + grad + opt</div><div class="rval">${fmtGB(adapterGB)}</div><div class="rsub">r=${r} all-linear · ${fmtNumC(trainable)} trainable</div></div>
+    <div class="rcard ${actGB > baseGB ? "warn" : ""}"><div class="rlabel">Activations</div><div class="rval">${fmtGB(actGB)}</div><div class="rsub">ckpt ${ckpt ? "on" : "OFF"} · flash ${flash ? "on" : "OFF"}${attnGB > 1 ? ` · seq² +${fmtGB(attnGB)}` : ""}</div></div>
+    <div class="rcard ${fits ? "good" : "warn"}"><div class="rlabel">Total estimate</div><div class="rval">${fmtGB(totalGB)}</div><div class="rsub">${fits ? `fits 1× ${g.gpu} (${fmtGB(Math.max(0, headroom))} free)` : `OOM on ${g.gpu} (${g.vramGB}GB) → need ${nSel}× or trim`}</div></div>`;
+}
+
+/* ============================================================
    RAG / VECTOR DB
    ============================================================ */
 function renderRag() {
@@ -626,6 +680,7 @@ function renderAll() {
   renderLeverResult();
   renderKv();
   renderTraining();
+  renderQlora();
   renderRag();
 }
 
@@ -635,6 +690,7 @@ function init() {
   renderGoogle();
   renderGpu();
   renderCheat();
+  renderQloraFixes();
   buildLeverCards();
   renderAll();
 
@@ -656,6 +712,7 @@ function init() {
   ["lvHr", "lvN", "lvTok", "lvModel", "lvSelfModel", "lvUtil", "lvTcoX"].forEach((id) => $(id).addEventListener("input", renderLeverResult));
   ["kvLayers", "kvHeads", "kvHeadDim", "kvSeq", "kvBytes", "kvConc", "kvWeights", "kvGpu"].forEach((id) => $(id).addEventListener("input", renderKv));
   ["trParams", "trTokens", "trGpu", "trN", "trMfu", "trHr"].forEach((id) => $(id).addEventListener("input", renderTraining));
+  ["qlPreset", "qlGpu", "qlSeq", "qlBatch", "qlRank", "qlCkpt", "qlFlash"].forEach((id) => $(id).addEventListener("input", renderQlora));
   ["ragN", "ragDim", "ragPrec", "ragOverhead", "ragChunkTok", "ragEmbedPrice", "ragTopk", "ragQueries"].forEach((id) => $(id).addEventListener("input", renderRag));
 
   // preset + GPU-select handlers

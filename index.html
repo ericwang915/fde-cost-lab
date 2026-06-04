@@ -26,6 +26,7 @@
       <a href="#levers">🔧 Build-vs-Buy</a>
       <a href="#kv">🧮 KV-Cache</a>
       <a href="#training">🎓 Training</a>
+      <a href="#qlora">🧯 QLoRA</a>
       <a href="#rag">🔎 RAG</a>
       <a href="#gpu">🖥️ GPUs</a>
       <a href="#cheat">📐 Formulas</a>
@@ -377,6 +378,53 @@
       </div>
       <div id="trResult" class="result-cards"></div>
       <div class="formula-box">FLOPs = 6 × N × D &nbsp;·&nbsp; time = FLOPs ÷ (#GPU × TFLOPS × MFU) &nbsp;·&nbsp; full-FT memory ≈ ~16–20 bytes/param (weights+grads+Adam) &nbsp;·&nbsp; LoRA ≈ weights only</div>
+    </section>
+
+    <!-- ======================= QLORA OOM ======================= -->
+    <section id="qlora" class="panel">
+      <div class="panel-head">
+        <h2>🧯 QLoRA Fine-tune & OOM Guide</h2>
+        <p class="hint">QLoRA = 4-bit frozen base (NF4) + small trainable LoRA adapters. The base is fixed, so <b>OOM is almost always activations</b> (batch × seq), not weights. Estimate the memory, then work the rescue checklist. <span class="sub">Estimates use rough constants — directional, not exact.</span></p>
+      </div>
+
+      <div class="inputs grid-4">
+        <label>Model preset
+          <select id="qlPreset"></select>
+        </label>
+        <label>Target GPU
+          <select id="qlGpu"></select>
+        </label>
+        <label>Max sequence length
+          <input id="qlSeq" type="number" min="1" value="2048" />
+        </label>
+        <label>Batch size / device
+          <input id="qlBatch" type="number" min="1" value="1" />
+        </label>
+      </div>
+      <div class="inputs grid-4">
+        <label>LoRA rank r
+          <input id="qlRank" type="number" min="1" value="16" />
+        </label>
+        <label class="checkbox-label">
+          <input id="qlCkpt" type="checkbox" checked />
+          <span>Gradient checkpointing</span>
+        </label>
+        <label class="checkbox-label">
+          <input id="qlFlash" type="checkbox" checked />
+          <span>Flash Attention 2</span>
+        </label>
+      </div>
+
+      <div id="qlResult" class="result-cards"></div>
+      <div class="formula-box">QLoRA mem ≈ 0.5·params (4-bit base) + adapter(≈2·r·hidden·7·layers) + activations(batch·seq·hidden·layers·C) + (seq² attn if no flash)</div>
+
+      <h3 class="subhead">OOM rescue checklist (ordered by impact)</h3>
+      <div id="qlFixes" class="lever-grid"></div>
+
+      <div class="callout" style="margin-top:18px">
+        <span class="callout-tag">Two lines to remember</span>
+        "QLoRA OOM is activations, not weights — the 4-bit base is fixed; batch × seq × checkpointing is where you win." &nbsp;·&nbsp; "Standard rescue stack = gradient checkpointing + flash-attention + batch 1 with grad-accumulation + paged 8-bit optimizer."
+      </div>
     </section>
 
     <!-- ======================= RAG ======================= -->
