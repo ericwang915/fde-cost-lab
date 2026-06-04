@@ -132,6 +132,22 @@ const fmtRate = (v) => {
   return fmtCompact(v);
 };
 const fmtInt = (v) => Math.round(v).toLocaleString("en-US");
+// Inverse standard-normal CDF (Acklam's rational approximation) for eval stats.
+function normInv(p) {
+  if (p <= 0) return -Infinity;
+  if (p >= 1) return Infinity;
+  const a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+  const b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02, 6.680131188771972e+01, -1.328068155288572e+01];
+  const c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00, -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+  const d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00];
+  const pl = 0.02425, ph = 1 - pl; let q, r;
+  if (p < pl) { q = Math.sqrt(-2 * Math.log(p)); return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1); }
+  if (p <= ph) { q = p - 0.5; r = q * q; return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1); }
+  q = Math.sqrt(-2 * Math.log(1 - p)); return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+}
+const fmtDownYr = (h) => h >= 24 ? (h / 24).toFixed(1) + " days/yr" : h.toFixed(1) + " h/yr";
+const fmtMin = (m) => m >= 60 ? (m / 60).toFixed(1) + " h" : m.toFixed(1) + " min";
+
 // Stack throughput levers with diminishing returns: biggest lever counts in full,
 // each additional one is discounted (gains overlap; spec-decode fades once batching fills the batch).
 function diminishingStack(mults) {
@@ -619,6 +635,94 @@ function renderRag() {
 }
 
 /* ============================================================
+   EVAL SIZING & SIGNIFICANCE
+   ============================================================ */
+function renderEval() {
+  const conf = Math.min(99.9, num("evConf")) / 100;
+  const za = normInv((1 + conf) / 2);
+  const zb = normInv(Math.min(99.9, num("evPower")) / 100);
+  const p1 = num("evBase") / 100, p2 = Math.min(0.999, p1 + num("evMde") / 100);
+  const pbar = (p1 + p2) / 2;
+  const delta = Math.max(1e-6, p2 - p1);
+  const nPerArm = Math.pow(za * Math.sqrt(2 * pbar * (1 - pbar)) + zb * Math.sqrt(p1 * (1 - p1) + p2 * (1 - p2)), 2) / (delta * delta);
+
+  const ph = num("evAcc") / 100, N = num("evN") || 1, z = za;
+  const denom = 1 + z * z / N;
+  const center = (ph + z * z / (2 * N)) / denom;
+  const half = (z / denom) * Math.sqrt(ph * (1 - ph) / N + z * z / (4 * N * N));
+  const lo = Math.max(0, center - half) * 100, hi = Math.min(100, (center + half) * 100);
+  const moe = z * Math.sqrt(ph * (1 - ph) / N) * 100;
+  const Etarget = num("evMargin") / 100;
+  const Ntarget = Math.ceil(z * z * ph * (1 - ph) / (Etarget * Etarget));
+
+  $("evResult").innerHTML = `
+    <div class="rcard accent"><div class="rlabel">A/B sample size</div><div class="rval">${fmtInt(Math.ceil(nPerArm))}<span style="font-size:13px"> / arm</span></div><div class="rsub">${fmtInt(Math.ceil(nPerArm) * 2)} total · detect +${num("evMde")}pts @ ${num("evConf")}% / ${num("evPower")}% power</div></div>
+    <div class="rcard"><div class="rlabel">Wilson ${num("evConf")}% CI</div><div class="rval">${lo.toFixed(1)}–${hi.toFixed(1)}%</div><div class="rsub">measured ${num("evAcc")}% on N=${fmtInt(N)}</div></div>
+    <div class="rcard ${moe > num("evMde") ? "warn" : "good"}"><div class="rlabel">Margin of error</div><div class="rval">±${moe.toFixed(1)}<span style="font-size:13px"> pts</span></div><div class="rsub">${moe > num("evMde") ? "⚠ wider than your MDE — too few examples" : "tighter than your MDE ✓"}</div></div>
+    <div class="rcard"><div class="rlabel">N for ±${num("evMargin")}pt margin</div><div class="rval">${fmtInt(Ntarget)}</div><div class="rsub">examples to pin accuracy that tight</div></div>`;
+}
+
+/* ============================================================
+   QUEUEING / TAIL LATENCY (M/M/1)
+   ============================================================ */
+function renderQueue() {
+  const rho = Math.min(0.999, num("qRho") / 100), S = num("qS");
+  const p = Math.min(0.9999, num("qPct") / 100), budget = num("qBudget") || 1;
+  const W = S / (1 - rho);
+  const k = -Math.log(1 - p);
+  const tp = k * W;
+  const L = rho / (1 - rho);
+  const rhoMax = 1 - (k * S / budget);
+
+  $("queueResult").innerHTML = `
+    <div class="rcard accent"><div class="rlabel">Avg response W</div><div class="rval">${fmtMs(W)}</div><div class="rsub">×${(1 / (1 - rho)).toFixed(1)} vs ${S}ms service @ ${num("qRho")}% util</div></div>
+    <div class="rcard ${tp > budget ? "warn" : "good"}"><div class="rlabel">p${num("qPct")} latency</div><div class="rval">${fmtMs(tp)}</div><div class="rsub">tail = ${k.toFixed(1)}× the mean${tp > budget ? " · ⚠ over budget" : ""}</div></div>
+    <div class="rcard"><div class="rlabel">In system (L)</div><div class="rval">${L.toFixed(1)}</div><div class="rsub">avg requests queued + in service</div></div>
+    <div class="rcard ${rhoMax > 0 ? "good" : "warn"}"><div class="rlabel">Max safe utilization</div><div class="rval">${rhoMax > 0 ? (rhoMax * 100).toFixed(0) + "%" : "—"}</div><div class="rsub">${rhoMax > 0 ? `to keep p${num("qPct")} ≤ ${budget}ms` : `even idle, p${num("qPct")} = ${fmtMs(k * S)} > budget`}</div></div>`;
+}
+
+/* ============================================================
+   SLA / AVAILABILITY / ERROR BUDGET
+   ============================================================ */
+function renderSla() {
+  const A = Math.min(0.99999, num("slaTarget") / 100);
+  const deps = num("slaDeps"), depA = Math.min(0.99999, num("slaDepAvail") / 100);
+  const repA = Math.min(0.99999, num("slaReplica") / 100);
+
+  const downYrH = (1 - A) * 8760;
+  const moMin = (1 - A) * 730 * 60;
+  const serialA = Math.pow(depA, deps);
+  const serialDownMo = (1 - serialA) * 730 * 60;
+  const Nrep = repA >= A ? 1 : Math.ceil(Math.log(1 - A) / Math.log(1 - repA));
+
+  $("slaResult").innerHTML = `
+    <div class="rcard accent"><div class="rlabel">Downtime at ${num("slaTarget")}%</div><div class="rval">${fmtDownYr(downYrH)}</div><div class="rsub">${fmtMin(moMin)}/mo · ${fmtMin((1 - A) * 168 * 60)}/wk</div></div>
+    <div class="rcard ${serialA < A ? "warn" : ""}"><div class="rlabel">Serial chain (${deps} deps)</div><div class="rval">${(serialA * 100).toFixed(3)}%</div><div class="rsub">${num("slaDepAvail")}%^${deps} → ${fmtMin(serialDownMo)}/mo down</div></div>
+    <div class="rcard good"><div class="rlabel">Replicas for target</div><div class="rval">${Nrep}×</div><div class="rsub">single ${num("slaReplica")}% → ${num("slaTarget")}% in parallel</div></div>
+    <div class="rcard"><div class="rlabel">Error budget</div><div class="rval">${fmtMin(moMin)}<span style="font-size:13px">/mo</span></div><div class="rsub">spend on deploys / experiments</div></div>`;
+}
+
+/* ============================================================
+   PROMPT CACHE BREAK-EVEN
+   ============================================================ */
+function renderCache() {
+  const P = num("cachePrefix"), N = num("cacheCalls"), price = num("cachePrice");
+  const wMult = num("cacheWrite"), rMult = num("cacheRead");
+  const noCache = N * P * price / 1e6;
+  const withCache = P * price / 1e6 * (wMult + rMult * (N - 1));
+  const save = noCache > 0 ? (noCache - withCache) / noCache : 0;
+  const breakeven = (1 - rMult) > 0 ? Math.max(2, Math.ceil((wMult - rMult) / (1 - rMult) + 1e-9)) : Infinity;
+
+  $("cacheResult").innerHTML = `
+    <div class="rcard"><div class="rlabel">No cache</div><div class="rval">${fmtMoney(noCache)}</div><div class="rsub">${fmtInt(N)} × ${fmtInt(P)} tok × $${price}/1M</div></div>
+    <div class="rcard accent"><div class="rlabel">With cache</div><div class="rval">${fmtMoney(withCache)}</div><div class="rsub">1 write (${wMult}×) + ${fmtInt(N - 1)} reads (${rMult}×)</div></div>
+    <div class="rcard ${save > 0 ? "good" : "warn"}"><div class="rlabel">Savings</div><div class="rval">${(save * 100).toFixed(0)}%</div><div class="rsub">${save > 0 ? fmtMoney(noCache - withCache) + " saved" : "not worth it at this reuse"}</div></div>
+    <div class="rcard"><div class="rlabel">Break-even reuses</div><div class="rval">${isFinite(breakeven) ? breakeven : "—"}<span style="font-size:13px"> calls</span></div><div class="rsub">min reuses before caching pays off</div></div>`;
+
+  $("cacheNote").innerHTML = "💡 Gemini/Anthropic also charge cache <b>storage</b> (~$1 / 1M-tok / hour) for explicit caches — short-lived prefixes reused few times may not clear that. Implicit caching (auto) has no write premium.";
+}
+
+/* ============================================================
    STATIC TABLES / CHEAT SHEET
    ============================================================ */
 function renderGoogle() {
@@ -661,6 +765,14 @@ const CHEAT = [
     d: "Stack these where the workload allows: async → batch; repeated prompts → cache; steady load → reserved." },
   { t: "⑫ Throughput levers", f: "batching ×2–4 · quant VRAM−50~75% · spec-decode ×2–3 · reserved −30~50%",
     d: "Ordered by bang-for-buck. Continuous batching is the free lunch; quantization needs an eval to prove accuracy held." },
+  { t: "⑬ Eval sizing & CI", f: "A/B n ≈ (z_α+z_β)²·p(1−p)·2 ÷ Δ²  ·  ±margin = z·√(p(1−p)/N)",
+    d: "Want to catch a 3-pt drop? You need ~2k examples/arm. A 200-example eval has a ~±4-pt margin — don't claim a 2-pt win off it." },
+  { t: "⑭ Queueing / tail (M/M/1)", f: "W = S ÷ (1−ρ)  ·  p99 ≈ 4.6 × W  ·  L = ρ ÷ (1−ρ)",
+    d: "Latency blows up as 1/(1−ρ). At 80% util latency is 5× service; at 95% it's 20×. That's why you hold utilization headroom." },
+  { t: "⑮ SLA & error budget", f: "downtime = (1−A)·period  ·  serial A = ∏Aᵢ  ·  parallel A = 1−∏(1−Aᵢ)",
+    d: "99.9% = 8.76h/yr = 43min/mo. Dependencies multiply (chain < weakest link); replicas add nines. (1−SLO) is your error budget." },
+  { t: "⑯ Prompt cache", f: "cached = P·price·(write + read·(N−1))  ·  break-even = (write−read) ÷ (1−read)",
+    d: "Anthropic write 1.25× / read 0.1× → pays off after ~2 reuses. Mind cache storage (~$1/1M-tok/hr) for short-lived prefixes." },
 ];
 function renderCheat() {
   $("cheatGrid").innerHTML = CHEAT.map((c) =>
@@ -682,6 +794,10 @@ function renderAll() {
   renderTraining();
   renderQlora();
   renderRag();
+  renderEval();
+  renderQueue();
+  renderSla();
+  renderCache();
 }
 
 function init() {
@@ -714,6 +830,10 @@ function init() {
   ["trParams", "trTokens", "trGpu", "trN", "trMfu", "trHr"].forEach((id) => $(id).addEventListener("input", renderTraining));
   ["qlPreset", "qlGpu", "qlSeq", "qlBatch", "qlRank", "qlCkpt", "qlFlash"].forEach((id) => $(id).addEventListener("input", renderQlora));
   ["ragN", "ragDim", "ragPrec", "ragOverhead", "ragChunkTok", "ragEmbedPrice", "ragTopk", "ragQueries"].forEach((id) => $(id).addEventListener("input", renderRag));
+  ["evBase", "evMde", "evConf", "evPower", "evAcc", "evN", "evMargin"].forEach((id) => $(id).addEventListener("input", renderEval));
+  ["qRho", "qS", "qPct", "qBudget"].forEach((id) => $(id).addEventListener("input", renderQueue));
+  ["slaTarget", "slaDeps", "slaDepAvail", "slaReplica"].forEach((id) => $(id).addEventListener("input", renderSla));
+  ["cachePrefix", "cacheCalls", "cachePrice", "cacheWrite", "cacheRead"].forEach((id) => $(id).addEventListener("input", renderCache));
 
   // preset + GPU-select handlers
   $("kvPreset").addEventListener("change", () => { applyKvPreset(); renderKv(); });

@@ -28,6 +28,10 @@
       <a href="#training">🎓 Training</a>
       <a href="#qlora">🧯 QLoRA</a>
       <a href="#rag">🔎 RAG</a>
+      <a href="#eval">📊 Eval</a>
+      <a href="#queue">⏳ Queueing</a>
+      <a href="#sla">🛡️ SLA</a>
+      <a href="#promptcache">💾 Cache</a>
       <a href="#gpu">🖥️ GPUs</a>
       <a href="#cheat">📐 Formulas</a>
     </nav>
@@ -468,6 +472,122 @@
       </div>
       <div id="ragResult" class="result-cards"></div>
       <div class="formula-box">store = vectors × dim × bytes × overhead &nbsp;·&nbsp; embed cost = vectors × chunk_tokens × price ÷ 1e6 &nbsp;·&nbsp; added input/query = top-k × chunk_tokens</div>
+    </section>
+
+    <!-- ======================= EVAL & SIGNIFICANCE ======================= -->
+    <section id="eval" class="panel">
+      <div class="panel-head">
+        <h2>📊 Eval Sizing & Significance</h2>
+        <p class="hint">The FDE's whole pitch is "I can <i>prove</i> it works — and prove how much accuracy a cheaper model lost." That needs an eval set big enough to be statistically meaningful. How many examples, and what's the confidence interval on what you measured.</p>
+      </div>
+      <div class="inputs grid-4">
+        <label>Baseline accuracy %
+          <input id="evBase" type="number" min="0" max="100" step="0.1" value="85" />
+        </label>
+        <label>Min detectable effect (pts)
+          <input id="evMde" type="number" min="0.1" step="0.1" value="3" />
+          <span class="sub">smallest Δ you care to catch</span>
+        </label>
+        <label>Confidence %
+          <input id="evConf" type="number" min="50" max="99.9" step="0.1" value="95" />
+        </label>
+        <label>Power %
+          <input id="evPower" type="number" min="50" max="99.9" step="1" value="80" />
+        </label>
+      </div>
+      <div class="inputs grid-3">
+        <label>Measured accuracy %
+          <input id="evAcc" type="number" min="0" max="100" step="0.1" value="90" />
+        </label>
+        <label>Eval set size N
+          <input id="evN" type="number" min="1" value="200" />
+        </label>
+        <label>Target margin ± pts
+          <input id="evMargin" type="number" min="0.1" step="0.1" value="2" />
+        </label>
+      </div>
+      <div id="evResult" class="result-cards"></div>
+      <div class="formula-box">A/B n/arm = (z_α√2p̄q̄ + z_β√(p₁q₁+p₂q₂))² ÷ Δ² &nbsp;·&nbsp; Wilson CI (good for small N / extreme p) &nbsp;·&nbsp; N for ±E = z²·p(1−p) ÷ E²</div>
+    </section>
+
+    <!-- ======================= QUEUEING / TAIL LATENCY ======================= -->
+    <section id="queue" class="panel">
+      <div class="panel-head">
+        <h2>⏳ Queueing & Tail Latency (M/M/1)</h2>
+        <p class="hint">Why you can't run a server at 100% utilization. As utilization ρ → 1, latency blows up as <b>1/(1−ρ)</b> — and the p99 tail is several× the mean. This is the "why" behind the headroom in <a href="#capacity">Capacity</a>.</p>
+      </div>
+      <div class="inputs grid-4">
+        <label>Utilization ρ %
+          <input id="qRho" type="number" min="1" max="99" value="80" />
+        </label>
+        <label>Mean service time (ms)
+          <input id="qS" type="number" min="1" value="100" />
+          <span class="sub">latency with no queue</span>
+        </label>
+        <label>Percentile p %
+          <input id="qPct" type="number" min="50" max="99.99" step="0.1" value="99" />
+        </label>
+        <label>p-latency budget (ms)
+          <input id="qBudget" type="number" min="1" value="500" />
+        </label>
+      </div>
+      <div id="queueResult" class="result-cards"></div>
+      <div class="formula-box">W = S ÷ (1−ρ) &nbsp;·&nbsp; queue depth L = ρ ÷ (1−ρ) &nbsp;·&nbsp; p-quantile = −ln(1−p) × W &nbsp;·&nbsp; max ρ for p ≤ budget = 1 − (−ln(1−p)·S ÷ budget)</div>
+    </section>
+
+    <!-- ======================= SLA / RELIABILITY ======================= -->
+    <section id="sla" class="panel">
+      <div class="panel-head">
+        <h2>🛡️ SLA, Availability & Error Budget</h2>
+        <p class="hint">Customer asks "what's your uptime?" Nines translate to real downtime; serial dependencies <b>multiply</b> (so the chain is always worse than its weakest link); parallel replicas buy you nines.</p>
+      </div>
+      <div class="inputs grid-4">
+        <label>Target availability %
+          <input id="slaTarget" type="number" min="90" max="99.999" step="0.001" value="99.9" />
+        </label>
+        <label># serial dependencies
+          <input id="slaDeps" type="number" min="1" value="3" />
+        </label>
+        <label>Each dependency avail %
+          <input id="slaDepAvail" type="number" min="90" max="99.999" step="0.001" value="99.95" />
+        </label>
+        <label>Single-replica avail %
+          <input id="slaReplica" type="number" min="90" max="99.999" step="0.001" value="99" />
+        </label>
+      </div>
+      <div id="slaResult" class="result-cards"></div>
+      <div class="formula-box">downtime = (1−A) × period &nbsp;·&nbsp; serial chain A = ∏Aᵢ &nbsp;·&nbsp; parallel A = 1−∏(1−Aᵢ) &nbsp;·&nbsp; error budget = (1−SLO)</div>
+    </section>
+
+    <!-- ======================= PROMPT CACHE BREAK-EVEN ======================= -->
+    <section id="promptcache" class="panel">
+      <div class="panel-head">
+        <h2>💾 Prompt Cache Break-even</h2>
+        <p class="hint">Caching a long shared prefix (system prompt, few-shot, a doc) is cheap to read but has a write premium. How many reuses before it pays off. Defaults are Anthropic's口径 (write 1.25×, read 0.1×).</p>
+      </div>
+      <div class="inputs grid-4">
+        <label>Cached prefix tokens
+          <input id="cachePrefix" type="number" min="1" value="2000" />
+        </label>
+        <label>Calls reusing it (N)
+          <input id="cacheCalls" type="number" min="1" value="100" />
+        </label>
+        <label>Input price $/1M
+          <input id="cachePrice" type="number" min="0" step="0.01" value="2.00" />
+        </label>
+        <label>Write × / Read ×
+          <input id="cacheWrite" type="number" min="0" step="0.05" value="1.25" />
+        </label>
+      </div>
+      <div class="inputs grid-3">
+        <label>Cache read multiplier
+          <input id="cacheRead" type="number" min="0" step="0.01" value="0.10" />
+          <span class="sub">Anthropic 0.1× · Gemini ~0.1× + storage</span>
+        </label>
+      </div>
+      <div id="cacheResult" class="result-cards"></div>
+      <p id="cacheNote" class="hint small"></p>
+      <div class="formula-box">no-cache = N × P × price &nbsp;·&nbsp; cached = P × price × (write + read×(N−1)) &nbsp;·&nbsp; break-even reuses = (write−read) ÷ (1−read)</div>
     </section>
 
     <!-- ======================= GPU TABLE ======================= -->
