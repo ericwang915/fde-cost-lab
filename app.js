@@ -247,6 +247,7 @@ function buildSelects() {
   $("lvSelfModel").value = "Llama 70B";
 
   $("kvPreset").innerHTML = archOpts; $("kvPreset").value = "Llama 70B";
+  $("kvGpu").innerHTML = gpuOpts; $("kvGpu").value = "H100";
   $("latPreset").innerHTML = archOpts; $("latPreset").value = "Llama 70B";
   $("trPreset").innerHTML = archOpts; $("trPreset").value = "Llama 8B";
 
@@ -499,16 +500,25 @@ function renderKv() {
   const totalKvGB = kvPerReqGB * conc;
   const totalGB = weights + totalKvGB;
 
-  const cards = [{ n: "A100/H100", cap: 80 }, { n: "H200", cap: 141 }, { n: "B200", cap: 192 }];
+  // auto recommendation: smallest single card that fits, else multi-GPU B200
+  const fitCards = [{ n: "A100/H100", cap: 80 }, { n: "H200", cap: 141 }, { n: "B200", cap: 192 }];
   let rec = Math.ceil(totalGB / 192) + "× B200 (>192GB, multi-GPU)";
-  for (const c of cards) { if (totalGB <= c.cap) { rec = "Fits one " + c.n + " (" + c.cap + "GB)"; break; } }
+  for (const c of fitCards) { if (totalGB <= c.cap) { rec = "Fits one " + c.n + " (" + c.cap + "GB)"; break; } }
   const kvBeatsWeights = totalKvGB > weights && weights > 0;
+
+  // sizing for the user-selected target GPU (assumes tensor-parallel sharding)
+  const selG = gpuByName($("kvGpu").value);
+  const nSel = Math.max(1, Math.ceil(totalGB / selG.vramGB));
+  const utilSel = totalGB / (nSel * selG.vramGB) * 100;
+  const maxConcSel = kvPerReqGB > 0 ? Math.max(0, Math.floor((nSel * selG.vramGB - weights) / kvPerReqGB)) : 0;
+  const selHr = nSel * selG.hr;
 
   $("kvResult").innerHTML = `
     <div class="rcard"><div class="rlabel">KV / request</div><div class="rval">${kvPerReqGB.toFixed(2)} GB</div><div class="rsub">@ ${seq.toLocaleString()} ctx</div></div>
     <div class="rcard warn"><div class="rlabel">KV total (${conc} concurrent)</div><div class="rval">${totalKvGB.toFixed(0)} GB</div><div class="rsub">${kvBeatsWeights ? "⚠ exceeds model weights" : "still below weights"}</div></div>
     <div class="rcard accent"><div class="rlabel">Total VRAM = weights + KV</div><div class="rval">${totalGB.toFixed(0)} GB</div><div class="rsub">weights ${weights}GB + KV ${totalKvGB.toFixed(0)}GB</div></div>
-    <div class="rcard good"><div class="rlabel">GPU recommendation</div><div class="rval" style="font-size:18px;line-height:1.3">${rec}</div></div>`;
+    <div class="rcard"><div class="rlabel">On ${selG.gpu} (${selG.vram})</div><div class="rval">${nSel}× ${selG.gpu}</div><div class="rsub">${utilSel.toFixed(0)}% VRAM · ~$${selHr.toFixed(1)}/hr · fits ${fmtInt(maxConcSel)} concurrent</div></div>
+    <div class="rcard good"><div class="rlabel">Optimal recommendation</div><div class="rval" style="font-size:18px;line-height:1.3">${rec}</div></div>`;
 }
 
 /* ============================================================
@@ -644,7 +654,7 @@ function init() {
   ["capQps", "capOut", "capTokGpu", "capLat", "capUtil"].forEach((id) => $(id).addEventListener("input", renderCapacity));
   ["beHr", "beN", "beModel", "beTokens", "beTokGpu"].forEach((id) => $(id).addEventListener("input", renderBreakeven));
   ["lvHr", "lvN", "lvTok", "lvModel", "lvSelfModel", "lvUtil", "lvTcoX"].forEach((id) => $(id).addEventListener("input", renderLeverResult));
-  ["kvLayers", "kvHeads", "kvHeadDim", "kvSeq", "kvBytes", "kvConc", "kvWeights"].forEach((id) => $(id).addEventListener("input", renderKv));
+  ["kvLayers", "kvHeads", "kvHeadDim", "kvSeq", "kvBytes", "kvConc", "kvWeights", "kvGpu"].forEach((id) => $(id).addEventListener("input", renderKv));
   ["trParams", "trTokens", "trGpu", "trN", "trMfu", "trHr"].forEach((id) => $(id).addEventListener("input", renderTraining));
   ["ragN", "ragDim", "ragPrec", "ragOverhead", "ragChunkTok", "ragEmbedPrice", "ragTopk", "ragQueries"].forEach((id) => $(id).addEventListener("input", renderRag));
 

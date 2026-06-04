@@ -333,6 +333,12 @@
           <span class="sub">to compare KV vs weights</span>
         </label>
       </div>
+      <div class="inputs grid-3">
+        <label>Target GPU (for sizing)
+          <select id="kvGpu"></select>
+          <span class="sub">how many of THIS card you'd need</span>
+        </label>
+      </div>
 
       <div id="kvResult" class="result-cards"></div>
       <div class="formula-box">KV / req = 2 × layers × kv_heads × head_dim × seq_len × bytes &nbsp;→&nbsp; total VRAM = weights + KV/req × concurrency</div>
