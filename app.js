@@ -124,7 +124,23 @@ const fmtCompact = (v) => {
   if (v >= 1e3) return "$" + (v / 1e3).toFixed(1) + "k";
   return fmtMoney(v);
 };
+const fmtRate = (v) => {
+  if (!isFinite(v)) return "—";
+  if (v === 0) return "$0";
+  if (v < 1) return "$" + v.toFixed(3);   // 3 decimals so display matches the % math
+  if (v < 1000) return "$" + v.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return fmtCompact(v);
+};
 const fmtInt = (v) => Math.round(v).toLocaleString("en-US");
+// Stack throughput levers with diminishing returns: biggest lever counts in full,
+// each additional one is discounted (gains overlap; spec-decode fades once batching fills the batch).
+function diminishingStack(mults) {
+  if (!mults.length) return 1;
+  const s = [...mults].sort((a, b) => b - a);
+  let total = s[0];
+  for (let i = 1; i < s.length; i++) total *= 1 + (s[i] - 1) * Math.pow(0.5, i);
+  return total;
+}
 const fmtNumC = (v) => {
   if (!isFinite(v)) return "—";
   if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
@@ -227,6 +243,8 @@ function buildSelects() {
   $("rtComplex").innerHTML = modelOpts; $("rtComplex").value = "Gemini 3.1 Pro";
   $("beModel").innerHTML = modelOpts; $("beModel").value = "Llama 3.3 70B";
   $("lvModel").innerHTML = modelOpts; $("lvModel").value = "Llama 3.3 70B";
+  $("lvSelfModel").innerHTML = Object.keys(ARCH).filter((k) => ARCH[k]).map((k) => `<option value="${k}">${k}</option>`).join("");
+  $("lvSelfModel").value = "Llama 70B";
 
   $("kvPreset").innerHTML = archOpts; $("kvPreset").value = "Llama 70B";
   $("latPreset").innerHTML = archOpts; $("latPreset").value = "Llama 70B";
@@ -367,7 +385,7 @@ function renderBreakeven() {
   $("beResult").innerHTML = `
     <div class="rcard"><div class="rlabel">Self-host (fixed)</div><div class="rval">${fmtCompact(selfMonthly)}</div><div class="rsub">${n}× ${$("beGpu").value} · caps at ${fmtNumC(ceiling)} tok/mo</div></div>
     <div class="rcard"><div class="rlabel">API @ your volume</div><div class="rval">${fmtCompact(apiMonthly)}</div><div class="rsub">${num("beTokens").toLocaleString()}M × ${fmtMoney(per1M)}/1M</div></div>
-    <div class="rcard ${satPer1M <= per1M ? "good" : "warn"}"><div class="rlabel">Self-host $/1M (saturated)</div><div class="rval">${fmtMoney(satPer1M)}</div><div class="rsub">best case vs API ${fmtMoney(per1M)}/1M</div></div>
+    <div class="rcard ${satPer1M <= per1M ? "good" : "warn"}"><div class="rlabel">Self-host $/1M (saturated)</div><div class="rval">${fmtRate(satPer1M)}</div><div class="rsub">best case vs API ${fmtRate(per1M)}/1M</div></div>
     <div class="rcard accent"><div class="rlabel">Break-even throughput</div><div class="rval">${fmtInt(beThroughput)}<span style="font-size:13px"> tok/s/GPU</span></div><div class="rsub">to beat API · you set ${fmtInt(tokGpu)}</div></div>
     <div class="rcard ${vClass}"><div class="rlabel">Verdict</div><div class="rval" style="font-size:18px;line-height:1.25">${vTitle}</div><div class="rsub">${vSub}</div></div>`;
 
@@ -408,39 +426,59 @@ function bindRange(id, dispId, fmt) {
 }
 
 function renderLeverResult() {
-  const hr = num("lvHr"), n = num("lvN"), baseTok = num("lvTok") || 1;
-  const inTok = num("inTok"), outTok = num("outTok");
-  const base = (hr * n / 3600) / baseTok * 1e6;
+  const g = gpuByName($("lvGpu").value);
+  const hr = num("lvHr"), userN = num("lvN"), baseTok = num("lvTok") || 1;
+  const util = Math.min(100, Math.max(1, num("lvUtil"))) / 100;
+  const tcoX = num("lvTcoX") || 1;
+  const sm = ARCH[$("lvSelfModel").value];
+  const params = sm ? sm.params : 70;
 
-  let tput = 1, vramNote = "";
-  if (chk("lvBatch")) tput *= num("lvBatchVal");
-  if (chk("lvSpec")) tput *= num("lvSpecVal");
+  // precision comes from the quantization lever → drives weights, min GPUs, AND throughput
+  let bytes = 2, quantTput = 1, vramNote = "";
   if (chk("lvQuant")) {
     const q = $("lvQuantMode").value;
-    tput *= QUANT_TPUT[q];
-    vramNote = q === "int4"
-      ? "INT4: ~75% less VRAM (weights halved again); validate accuracy with an eval set."
-      : "FP8: ~50% less VRAM (e.g. 70B weights ~140GB → fits one H200, or one H100 quantized).";
+    bytes = q === "int4" ? 0.5 : 1;
+    quantTput = QUANT_TPUT[q];
+    vramNote = q === "int4" ? "INT4: weights ~−75% (validate accuracy on an eval set)." : "FP8: weights ~−50%.";
   }
-  const effTok = baseTok * tput;
-  const effHr = hr * n * (chk("lvReserved") ? (1 - num("lvReservedVal") / 100) : 1);
-  const opt = (effHr / 3600) / effTok * 1e6;
+  const precName = bytes === 2 ? "FP16" : bytes === 1 ? "FP8" : "INT4";
+  const weightsGB = params * bytes;                         // GB (params B × bytes)
+  const minGpus = Math.max(1, Math.ceil(weightsGB / g.vramGB));
+  const n = Math.max(userN, minGpus);                       // model must physically fit
+
+  // throughput levers: raw multiplicative vs realistic (diminishing returns)
+  const mults = [];
+  if (chk("lvBatch")) mults.push(num("lvBatchVal"));
+  if (chk("lvQuant")) mults.push(quantTput);
+  if (chk("lvSpec")) mults.push(num("lvSpecVal"));
+  const rawMult = mults.reduce((a, b) => a * b, 1);
+  const realMult = diminishingStack(mults);
+  const peakTok = baseTok * realMult;                       // tok/s when the GPU is busy
+  const reserved = chk("lvReserved") ? (1 - num("lvReservedVal") / 100) : 1;
+
+  // floor = optimistic (rental only, 100% util, no levers); realistic = +levers +util +reserved +TCO
+  const base = (hr * n / 3600) / baseTok * 1e6;
+  const opt = ((hr * n * reserved) / 3600) / (peakTok * util) * 1e6 * tcoX;
 
   const m = MODELS.find((x) => x.model === $("lvModel").value) || MODELS[0];
   const managed = blendedPer1M(m);
   const save = base > 0 ? (base - opt) / base : 0;
   const selfCheaper = opt < managed;
-  const gap = managed > 0 ? Math.abs(managed - opt) / managed : 0;
+  const vWho = selfCheaper ? "Self-host" : "Managed API";
+  const vPct = selfCheaper ? (managed - opt) / managed : (opt - managed) / opt;
 
   $("leverResult").innerHTML = `
-    <div class="rcard"><div class="rlabel">Self-host baseline $/1M</div><div class="rval">${fmtMoney(base)}</div><div class="rsub">${fmtInt(baseTok)} tok/s · ${fmtMoney(hr * n)}/hr</div></div>
-    <div class="rcard accent"><div class="rlabel">Optimized $/1M</div><div class="rval">${fmtMoney(opt)}</div><div class="rsub">↓ ${(save * 100).toFixed(0)}% · effective ${fmtInt(effTok)} tok/s</div></div>
-    <div class="rcard"><div class="rlabel">Managed API $/1M</div><div class="rval">${fmtMoney(managed)}</div><div class="rsub">${m.model} · blended by in/out</div></div>
-    <div class="rcard ${selfCheaper ? "good" : "warn"}"><div class="rlabel">Build vs Buy</div><div class="rval" style="font-size:19px;line-height:1.25">${selfCheaper ? "Self-host" : "Managed API"} −${(gap * 100).toFixed(0)}%</div><div class="rsub">${selfCheaper ? "if GPUs stay saturated" : "no idle GPUs to pay for"}</div></div>`;
+    <div class="rcard"><div class="rlabel">Self-host floor $/1M</div><div class="rval">${fmtRate(base)}</div><div class="rsub">${n}× ${g.gpu} @ ${fmtInt(baseTok)} tok/s · 100% util, rental only</div></div>
+    <div class="rcard accent"><div class="rlabel">Realistic $/1M</div><div class="rval">${fmtRate(opt)}</div><div class="rsub">${save >= 0 ? "↓" : "↑"} ${Math.abs(save * 100).toFixed(0)}% vs floor · ${fmtInt(peakTok)} tok/s × ${(util * 100).toFixed(0)}% util × ${tcoX}× TCO</div></div>
+    <div class="rcard"><div class="rlabel">Managed API $/1M</div><div class="rval">${fmtRate(managed)}</div><div class="rsub">${m.model} · 4:1 in/out · 2026-06-03</div></div>
+    <div class="rcard ${selfCheaper ? "good" : "warn"}"><div class="rlabel">Build vs Buy</div><div class="rval" style="font-size:18px;line-height:1.25">${vWho} ${(vPct * 100).toFixed(0)}% cheaper</div><div class="rsub">${selfCheaper ? "only if you keep GPUs saturated" : "no idle-GPU bill on bursty traffic"}</div></div>`;
 
-  $("leverNote").innerHTML =
-    (vramNote ? "🧮 " + vramNote + "<br>" : "") +
-    (chk("lvRight") ? "🎯 Right-sizing: pick the card that just fits weights + KV-cache — don't run an oversized GPU half-empty." : "");
+  const notes = [];
+  if (userN < minGpus) notes.push(`⚠ ${$("lvSelfModel").value} at ${precName} needs ≥${minGpus}× ${g.gpu} (${fmtGB(weightsGB)} weights ÷ ${g.vramGB}GB) — using ${n}, not ${userN}.`);
+  if (rawMult > realMult + 0.05) notes.push(`Stacked levers: raw ${rawMult.toFixed(1)}× → realistic ~${realMult.toFixed(1)}× — batching / quant / spec-decode gains overlap and partially offset (spec-decode fades once batching fills the batch).`);
+  if (vramNote) notes.push("🧮 " + vramNote);
+  if (chk("lvRight")) notes.push("🎯 Right-sizing: pick the card that just fits weights + KV-cache — don't run an oversized GPU half-empty.");
+  $("leverNote").innerHTML = notes.join("<br>");
 }
 
 /* ============================================================
@@ -605,7 +643,7 @@ function init() {
   ["latParams", "latPrec", "latGpu", "latPrompt", "latOut", "latMfu"].forEach((id) => $(id).addEventListener("input", renderLatency));
   ["capQps", "capOut", "capTokGpu", "capLat", "capUtil"].forEach((id) => $(id).addEventListener("input", renderCapacity));
   ["beHr", "beN", "beModel", "beTokens", "beTokGpu"].forEach((id) => $(id).addEventListener("input", renderBreakeven));
-  ["lvHr", "lvN", "lvTok", "lvModel"].forEach((id) => $(id).addEventListener("input", renderLeverResult));
+  ["lvHr", "lvN", "lvTok", "lvModel", "lvSelfModel", "lvUtil", "lvTcoX"].forEach((id) => $(id).addEventListener("input", renderLeverResult));
   ["kvLayers", "kvHeads", "kvHeadDim", "kvSeq", "kvBytes", "kvConc", "kvWeights"].forEach((id) => $(id).addEventListener("input", renderKv));
   ["trParams", "trTokens", "trGpu", "trN", "trMfu", "trHr"].forEach((id) => $(id).addEventListener("input", renderTraining));
   ["ragN", "ragDim", "ragPrec", "ragOverhead", "ragChunkTok", "ragEmbedPrice", "ragTopk", "ragQueries"].forEach((id) => $(id).addEventListener("input", renderRag));

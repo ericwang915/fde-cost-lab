@@ -249,7 +249,7 @@
       <div class="panel-head">
         <h2>🔧 Throughput Levers & Self-host Cost</h2>
         <p class="hint">Toggle the optimization levers and watch <b>self-hosted $/1M tokens</b> drop, with a live <b>build-vs-buy</b> comparison against the managed API.<br>
-        <span class="sub">⚠️ These levers cut <u>self-hosted</u> cost. The managed API's per-token price is fixed by the provider (they already do this internally) — so this section models "if you ran the GPUs yourself."</span></p>
+        <span class="sub">⚠️ These levers cut <u>self-hosted</u> cost. The managed API's per-token price is fixed by the provider (they already do this internally) — so this section models "if you ran the GPUs yourself." It now binds GPU count to the model's weights, and factors utilization, TCO overhead, and diminishing-returns lever stacking — not just a saturated floor.</span></p>
       </div>
 
       <div class="inputs grid-4">
@@ -267,9 +267,21 @@
           <span class="sub">static-batch · auto-scales with GPU; edit to measured</span>
         </label>
       </div>
-      <div class="inputs grid-3">
-        <label>Build-vs-Buy compare model (API)
+      <div class="inputs grid-4">
+        <label>Self-host model (weights)
+          <select id="lvSelfModel"></select>
+          <span class="sub">sets min GPUs = ⌈weights ÷ VRAM⌉</span>
+        </label>
+        <label>Compare API model (buy)
           <select id="lvModel"></select>
+        </label>
+        <label>Utilization %
+          <input id="lvUtil" type="number" min="1" max="100" value="70" />
+          <span class="sub">peak→avg; idle GPUs still bill</span>
+        </label>
+        <label>TCO overhead ×
+          <input id="lvTcoX" type="number" min="1" step="0.1" value="1.4" />
+          <span class="sub">net/storage/ops/redundancy · 1 = rental only</span>
         </label>
       </div>
 
@@ -278,7 +290,7 @@
 
       <div id="leverResult" class="result-cards" style="margin-top:18px"></div>
       <p id="leverNote" class="hint small"></p>
-      <div class="formula-box">self-host $/1M = (GPU $/hr × #GPU ÷ 3600) ÷ effective_tok/s × 1e6 &nbsp;·&nbsp; throughput levers ↑ → cost ↓; reserved → hourly ↓; quant → less VRAM (fewer GPUs)</div>
+      <div class="formula-box">realistic $/1M = (GPU $/hr × #GPU × reserved ÷ 3600) ÷ (eff_tok/s × utilization) × 1e6 × TCO &nbsp;·&nbsp; #GPU ≥ ⌈weights ÷ VRAM⌉ &nbsp;·&nbsp; levers stack with diminishing returns</div>
     </section>
 
     <!-- ======================= KV CACHE ======================= -->
